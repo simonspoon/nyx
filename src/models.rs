@@ -368,4 +368,172 @@ mod tests {
         let text = record.extract_text().unwrap();
         assert!(text.contains("file contents here"));
     }
+
+    #[test]
+    fn custom_title_role_is_system() {
+        let json = r#"{
+            "type": "custom-title",
+            "customTitle": "My Chat",
+            "sessionId": "abc-123"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.role(), Some("system"));
+    }
+
+    #[test]
+    fn session_id_extraction() {
+        // User record
+        let json = r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-01-01T00:00:00Z","sessionId":"user-sess"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.session_id(), Some("user-sess"));
+
+        // Assistant record
+        let json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"model":"m"},"timestamp":"2026-01-01T00:00:00Z","sessionId":"asst-sess","slug":"s"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.session_id(), Some("asst-sess"));
+
+        // System record
+        let json = r#"{"type":"system","subtype":"stop","timestamp":"2026-01-01T00:00:00Z","sessionId":"sys-sess","slug":"s"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.session_id(), Some("sys-sess"));
+
+        // CustomTitle record
+        let json = r#"{"type":"custom-title","customTitle":"Title","sessionId":"ct-sess"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.session_id(), Some("ct-sess"));
+
+        // Progress record has no session_id
+        let json = r#"{"type":"progress","data":{"type":"hook_progress"},"toolUseID":"abc"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.session_id(), None);
+    }
+
+    #[test]
+    fn system_record_slug() {
+        let json = r#"{"type":"system","subtype":"stop","timestamp":"2026-01-01T00:00:00Z","sessionId":"s1","slug":"my-slug"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.slug(), Some("my-slug"));
+    }
+
+    #[test]
+    fn user_slug_returns_none() {
+        let json = r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-01-01T00:00:00Z","sessionId":"s1"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.slug(), None);
+    }
+
+    #[test]
+    fn tool_result_with_none_content() {
+        // User message with tool_result that has no content
+        let json = r#"{
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1"},
+                {"type": "text", "text": "follow up"}
+            ]},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        let text = record.extract_text().unwrap();
+        assert_eq!(text, "follow up");
+    }
+
+    #[test]
+    fn tool_result_content_blocks() {
+        // Tool result with block-based content
+        let json = r#"{
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "text", "text": "block one"},
+                    {"type": "text", "text": "block two"}
+                ]}
+            ]},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        let text = record.extract_text().unwrap();
+        assert!(text.contains("block one"));
+        assert!(text.contains("block two"));
+    }
+
+    #[test]
+    fn tool_result_content_blocks_empty() {
+        // Tool result blocks with no text fields
+        let content = ToolResultContent::Blocks(vec![ToolResultBlock {
+            block_type: Some("image".to_string()),
+            text: None,
+        }]);
+        assert!(content.extract_text().is_none());
+    }
+
+    #[test]
+    fn assistant_empty_string_content() {
+        let json = r#"{
+            "type": "assistant",
+            "message": {"role": "assistant", "content": "", "model": "m"},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert!(record.extract_text().is_none());
+    }
+
+    #[test]
+    fn assistant_no_content() {
+        let json = r#"{
+            "type": "assistant",
+            "message": {"role": "assistant", "model": "m"},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert!(record.extract_text().is_none());
+    }
+
+    #[test]
+    fn assistant_blocks_only_tool_use() {
+        // Assistant message with only tool_use blocks (no text) => None
+        let json = r#"{
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}
+            ], "model": "m"},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert!(record.extract_text().is_none());
+    }
+
+    #[test]
+    fn assistant_blocks_with_empty_text() {
+        // Assistant message with empty text block => None
+        let json = r#"{
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": ""}
+            ], "model": "m"},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sessionId": "s1"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert!(record.extract_text().is_none());
+    }
+
+    #[test]
+    fn custom_title_extract_text() {
+        // CustomTitle with title
+        let json = r#"{"type":"custom-title","customTitle":"My Title","sessionId":"s1"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        let text = record.extract_text().unwrap();
+        assert!(text.contains("My Title"));
+
+        // CustomTitle with null title
+        let json = r#"{"type":"custom-title","sessionId":"s1"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert!(record.extract_text().is_none());
+    }
 }

@@ -48,7 +48,7 @@ fn cmd_status(json: bool) -> Result<()> {
 
 fn cmd_index(json: bool) -> Result<()> {
     let db_path = db::default_db_path();
-    let db = Database::open(&db_path)?;
+    let mut db = Database::open(&db_path)?;
     let projects_dir = indexer::default_projects_dir();
 
     if !projects_dir.exists() {
@@ -58,7 +58,7 @@ fn cmd_index(json: bool) -> Result<()> {
         )));
     }
 
-    let (indexed, skipped) = indexer::index_all(&db, &projects_dir)?;
+    let (indexed, skipped) = indexer::index_all(&mut db, &projects_dir)?;
     output::print_index_result(indexed, skipped, json);
     Ok(())
 }

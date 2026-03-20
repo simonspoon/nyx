@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use serde_json::json;
+
 use crate::db::{Database, DbStats};
 use crate::search::{ConversationEntry, SearchResult, TranscriptMessage};
 
@@ -60,21 +62,21 @@ fn print_status_json(db: &Database, stats: &DbStats, source_size: u64) {
     let db_size = std::fs::metadata(&db.path).map(|m| m.len()).unwrap_or(0);
 
     let projects = db.project_counts().unwrap_or_default();
-    let projects_json: Vec<String> = projects
+    let projects_arr: Vec<serde_json::Value> = projects
         .iter()
-        .map(|(p, c)| format!(r#"{{"project":"{}","conversations":{}}}"#, p, c))
+        .map(|(p, c)| json!({"project": p, "conversations": c}))
         .collect();
 
-    println!(
-        r#"{{"index_path":"{}","message_count":{},"conversation_count":{},"project_count":{},"source_size_bytes":{},"index_size_bytes":{},"projects":[{}]}}"#,
-        db.path.display(),
-        stats.message_count,
-        stats.conversation_count,
-        stats.project_count,
-        source_size,
-        db_size,
-        projects_json.join(",")
-    );
+    let output = json!({
+        "index_path": db.path.display().to_string(),
+        "message_count": stats.message_count,
+        "conversation_count": stats.conversation_count,
+        "project_count": stats.project_count,
+        "source_size_bytes": source_size,
+        "index_size_bytes": db_size,
+        "projects": projects_arr,
+    });
+    println!("{}", serde_json::to_string(&output).unwrap());
 }
 
 /// Format and print search results.
@@ -129,21 +131,20 @@ fn print_search_human(results: &[SearchResult]) {
 }
 
 fn print_search_json(results: &[SearchResult]) {
-    let items: Vec<String> = results
+    let items: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
-            format!(
-                r#"{{"session_id":"{}","slug":{},"project":"{}","timestamp":{},"role":"{}","snippet":"{}"}}"#,
-                escape_json(&r.session_id),
-                r.slug.as_ref().map_or("null".to_string(), |s| format!(r#""{}""#, escape_json(s))),
-                escape_json(&r.project),
-                r.timestamp.as_ref().map_or("null".to_string(), |t| format!(r#""{}""#, escape_json(t))),
-                escape_json(&r.role),
-                escape_json(&r.snippet),
-            )
+            json!({
+                "session_id": r.session_id,
+                "slug": r.slug,
+                "project": r.project,
+                "timestamp": r.timestamp,
+                "role": r.role,
+                "snippet": r.snippet,
+            })
         })
         .collect();
-    println!("[{}]", items.join(","));
+    println!("{}", serde_json::to_string(&items).unwrap());
 }
 
 /// Format and print conversation list.
@@ -182,20 +183,19 @@ fn print_list_human(entries: &[ConversationEntry]) {
 }
 
 fn print_list_json(entries: &[ConversationEntry]) {
-    let items: Vec<String> = entries
+    let items: Vec<serde_json::Value> = entries
         .iter()
         .map(|e| {
-            format!(
-                r#"{{"session_id":"{}","slug":{},"project":"{}","first_timestamp":{},"last_timestamp":{}}}"#,
-                escape_json(&e.session_id),
-                e.slug.as_ref().map_or("null".to_string(), |s| format!(r#""{}""#, escape_json(s))),
-                escape_json(&e.project),
-                e.first_timestamp.as_ref().map_or("null".to_string(), |t| format!(r#""{}""#, escape_json(t))),
-                e.last_timestamp.as_ref().map_or("null".to_string(), |t| format!(r#""{}""#, escape_json(t))),
-            )
+            json!({
+                "session_id": e.session_id,
+                "slug": e.slug,
+                "project": e.project,
+                "first_timestamp": e.first_timestamp,
+                "last_timestamp": e.last_timestamp,
+            })
         })
         .collect();
-    println!("[{}]", items.join(","));
+    println!("{}", serde_json::to_string(&items).unwrap());
 }
 
 /// Format and print conversation transcript.
@@ -252,28 +252,23 @@ fn print_transcript_human(conv: &ConversationEntry, messages: &[TranscriptMessag
 }
 
 fn print_transcript_json(conv: &ConversationEntry, messages: &[TranscriptMessage]) {
-    let msgs: Vec<String> = messages
+    let msgs: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
-            format!(
-                r#"{{"timestamp":{},"role":"{}","content":"{}"}}"#,
-                m.timestamp
-                    .as_ref()
-                    .map_or("null".to_string(), |t| format!(r#""{}""#, escape_json(t))),
-                escape_json(&m.role),
-                escape_json(&m.content),
-            )
+            json!({
+                "timestamp": m.timestamp,
+                "role": m.role,
+                "content": m.content,
+            })
         })
         .collect();
-    println!(
-        r#"{{"session_id":"{}","slug":{},"project":"{}","messages":[{}]}}"#,
-        escape_json(&conv.session_id),
-        conv.slug
-            .as_ref()
-            .map_or("null".to_string(), |s| format!(r#""{}""#, escape_json(s))),
-        escape_json(&conv.project),
-        msgs.join(","),
-    );
+    let output = json!({
+        "session_id": conv.session_id,
+        "slug": conv.slug,
+        "project": conv.project,
+        "messages": msgs,
+    });
+    println!("{}", serde_json::to_string(&output).unwrap());
 }
 
 /// Print indexing progress.
@@ -315,10 +310,291 @@ fn format_date_short(ts: &str) -> String {
     ts.get(..10).unwrap_or(ts).to_string()
 }
 
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_db_with_data() -> Database {
+        let db = Database::open_memory().unwrap();
+        db.upsert_conversation(
+            "s1",
+            Some("test-slug"),
+            "myproject",
+            Some("2026-03-20T01:00:00Z"),
+            Some("2026-03-20T02:00:00Z"),
+            "/a.jsonl",
+            None,
+        )
+        .unwrap();
+        db.insert_message(
+            "s1",
+            Some("2026-03-20T01:00:00Z"),
+            "user",
+            "hello world",
+            "user",
+        )
+        .unwrap();
+        db.insert_message(
+            "s1",
+            Some("2026-03-20T01:01:00Z"),
+            "assistant",
+            "hi there",
+            "assistant",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1_048_576), "1.0 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+        assert_eq!(format_bytes(2_147_483_648), "2.0 GB");
+    }
+
+    #[test]
+    fn test_format_date_short() {
+        assert_eq!(format_date_short("2026-03-20T01:26:11.953Z"), "2026-03-20");
+        assert_eq!(format_date_short("2026-03-20 14:32"), "2026-03-20");
+        // Short string (less than 10 chars) returns the whole thing
+        assert_eq!(format_date_short("short"), "short");
+    }
+
+    #[test]
+    fn test_print_status_human() {
+        let db = make_db_with_data();
+        let stats = db.stats().unwrap();
+        // Just verify it doesn't panic
+        print_status_human(&db, &stats, 12345);
+    }
+
+    #[test]
+    fn test_print_status_json() {
+        let db = make_db_with_data();
+        let stats = db.stats().unwrap();
+        // Just verify it doesn't panic
+        print_status_json(&db, &stats, 12345);
+    }
+
+    #[test]
+    fn test_print_search_human_empty() {
+        print_search_human(&[]);
+    }
+
+    #[test]
+    fn test_print_search_human_with_results() {
+        let results = vec![
+            SearchResult {
+                session_id: "s1".to_string(),
+                slug: Some("test-slug".to_string()),
+                project: "proj".to_string(),
+                timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+                role: "user".to_string(),
+                snippet: ">>>hello<<< world".to_string(),
+            },
+            SearchResult {
+                session_id: "s1".to_string(),
+                slug: Some("test-slug".to_string()),
+                project: "proj".to_string(),
+                timestamp: Some("2026-03-20T01:01:00Z".to_string()),
+                role: "assistant".to_string(),
+                snippet: ">>>hello<<< back".to_string(),
+            },
+            SearchResult {
+                session_id: "s2".to_string(),
+                slug: None,
+                project: "proj2".to_string(),
+                timestamp: None,
+                role: "system".to_string(),
+                snippet: "system msg".to_string(),
+            },
+        ];
+        print_search_human(&results);
+    }
+
+    #[test]
+    fn test_print_search_json() {
+        let results = vec![SearchResult {
+            session_id: "s1".to_string(),
+            slug: Some("slug".to_string()),
+            project: "proj".to_string(),
+            timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            role: "user".to_string(),
+            snippet: "snippet text".to_string(),
+        }];
+        print_search_json(&results);
+    }
+
+    #[test]
+    fn test_print_list_human_empty() {
+        print_list_human(&[]);
+    }
+
+    #[test]
+    fn test_print_list_human_with_entries() {
+        let entries = vec![
+            ConversationEntry {
+                session_id: "s1".to_string(),
+                slug: Some("my-slug".to_string()),
+                project: "proj".to_string(),
+                first_timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+                last_timestamp: Some("2026-03-20T02:00:00Z".to_string()),
+                custom_title: None,
+            },
+            ConversationEntry {
+                session_id: "abcdefgh-1234".to_string(),
+                slug: None,
+                project: "proj2".to_string(),
+                first_timestamp: None,
+                last_timestamp: None,
+                custom_title: Some("Custom Title".to_string()),
+            },
+        ];
+        print_list_human(&entries);
+    }
+
+    #[test]
+    fn test_print_list_json() {
+        let entries = vec![ConversationEntry {
+            session_id: "s1".to_string(),
+            slug: Some("slug".to_string()),
+            project: "proj".to_string(),
+            first_timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            last_timestamp: Some("2026-03-20T02:00:00Z".to_string()),
+            custom_title: None,
+        }];
+        print_list_json(&entries);
+    }
+
+    #[test]
+    fn test_print_transcript_human() {
+        let conv = ConversationEntry {
+            session_id: "s1".to_string(),
+            slug: Some("my-slug".to_string()),
+            project: "proj".to_string(),
+            first_timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            last_timestamp: Some("2026-03-20T02:00:00Z".to_string()),
+            custom_title: Some("My Title".to_string()),
+        };
+        let messages = vec![
+            TranscriptMessage {
+                timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+                role: "user".to_string(),
+                content: "hello".to_string(),
+            },
+            TranscriptMessage {
+                timestamp: Some("2026-03-20T01:01:00Z".to_string()),
+                role: "assistant".to_string(),
+                content: "hi there".to_string(),
+            },
+            TranscriptMessage {
+                timestamp: None,
+                role: "system".to_string(),
+                content: "system msg".to_string(),
+            },
+        ];
+        print_transcript_human(&conv, &messages);
+    }
+
+    #[test]
+    fn test_print_transcript_human_long_message() {
+        let conv = ConversationEntry {
+            session_id: "s1".to_string(),
+            slug: None,
+            project: "proj".to_string(),
+            first_timestamp: None,
+            last_timestamp: None,
+            custom_title: None,
+        };
+        // Create a message longer than 2000 chars to test truncation
+        let long_content = "a".repeat(3000);
+        let messages = vec![TranscriptMessage {
+            timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            role: "user".to_string(),
+            content: long_content,
+        }];
+        print_transcript_human(&conv, &messages);
+    }
+
+    #[test]
+    fn test_print_transcript_json() {
+        let conv = ConversationEntry {
+            session_id: "s1".to_string(),
+            slug: Some("slug".to_string()),
+            project: "proj".to_string(),
+            first_timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            last_timestamp: Some("2026-03-20T02:00:00Z".to_string()),
+            custom_title: None,
+        };
+        let messages = vec![TranscriptMessage {
+            timestamp: Some("2026-03-20T01:00:00Z".to_string()),
+            role: "user".to_string(),
+            content: "hello".to_string(),
+        }];
+        print_transcript_json(&conv, &messages);
+    }
+
+    #[test]
+    fn test_print_index_result_human() {
+        print_index_result(5, 3, false);
+    }
+
+    #[test]
+    fn test_print_index_result_json() {
+        print_index_result(5, 3, true);
+    }
+
+    #[test]
+    fn test_calculate_source_size_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(calculate_source_size(dir.path()), 0);
+    }
+
+    #[test]
+    fn test_calculate_source_size_with_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.jsonl");
+        std::fs::write(&file, "some data here").unwrap();
+        assert!(calculate_source_size(dir.path()) > 0);
+    }
+
+    #[test]
+    fn test_print_status_dispatches() {
+        let db = make_db_with_data();
+        let stats = db.stats().unwrap();
+        // Test both paths of the dispatcher
+        print_status(&db, &stats, 100, false);
+        print_status(&db, &stats, 100, true);
+    }
+
+    #[test]
+    fn test_print_search_results_dispatches() {
+        let results = vec![];
+        print_search_results(&results, false);
+        print_search_results(&results, true);
+    }
+
+    #[test]
+    fn test_print_conversation_list_dispatches() {
+        let entries = vec![];
+        print_conversation_list(&entries, false);
+        print_conversation_list(&entries, true);
+    }
+
+    #[test]
+    fn test_print_transcript_dispatches() {
+        let conv = ConversationEntry {
+            session_id: "s1".to_string(),
+            slug: Some("slug".to_string()),
+            project: "proj".to_string(),
+            first_timestamp: None,
+            last_timestamp: None,
+            custom_title: None,
+        };
+        let messages = vec![];
+        print_transcript(&conv, &messages, false);
+        print_transcript(&conv, &messages, true);
+    }
 }

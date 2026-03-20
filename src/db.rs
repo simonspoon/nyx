@@ -5,7 +5,6 @@ use rusqlite::{Connection, params};
 
 use crate::error::{Error, Result};
 
-#[allow(dead_code)]
 const SCHEMA_VERSION: i32 = 1;
 
 pub struct Database {
@@ -25,6 +24,7 @@ impl Database {
             path: path.to_path_buf(),
         };
         db.init_schema()?;
+        db.validate_schema_version()?;
         Ok(db)
     }
 
@@ -127,7 +127,24 @@ impl Database {
         Ok(())
     }
 
+    /// Validate that the stored schema version matches the expected version.
+    fn validate_schema_version(&self) -> Result<()> {
+        let stored: i32 =
+            self.conn
+                .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                    row.get(0)
+                })?;
+        if stored != SCHEMA_VERSION {
+            return Err(Error::SchemaMismatch {
+                expected: SCHEMA_VERSION,
+                found: stored,
+            });
+        }
+        Ok(())
+    }
+
     /// Check if a source file needs re-indexing based on mtime.
+    #[allow(dead_code)]
     pub fn needs_reindex(&self, path: &Path, current_mtime: SystemTime) -> Result<bool> {
         let path_str = path.to_string_lossy().to_string();
         let current_secs = current_mtime
@@ -149,6 +166,7 @@ impl Database {
     }
 
     /// Record that a source file has been indexed with its current mtime.
+    #[allow(dead_code)]
     pub fn record_source_file(
         &self,
         path: &Path,
@@ -169,7 +187,7 @@ impl Database {
     }
 
     /// Insert or update a conversation record.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub fn upsert_conversation(
         &self,
         session_id: &str,
@@ -194,6 +212,7 @@ impl Database {
     }
 
     /// Insert a message record.
+    #[allow(dead_code)]
     pub fn insert_message(
         &self,
         session_id: &str,
@@ -211,6 +230,7 @@ impl Database {
     }
 
     /// Delete all data for a session (for re-indexing).
+    #[allow(dead_code)]
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM messages WHERE session_id = ?1",
@@ -296,11 +316,14 @@ pub struct DbStats {
 }
 
 pub fn default_db_path() -> PathBuf {
-    dirs_home().join(".nyx").join("index.db")
+    home_dir().join(".nyx").join("index.db")
 }
 
-fn dirs_home() -> PathBuf {
+/// Resolve the user's home directory cross-platform.
+/// Checks HOME first (Unix), then USERPROFILE (Windows), falls back to ".".
+pub fn home_dir() -> PathBuf {
     std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -466,5 +489,77 @@ mod tests {
         let counts = db.project_counts().unwrap();
         assert_eq!(counts[0], ("project-a".to_string(), 2));
         assert_eq!(counts[1], ("project-b".to_string(), 1));
+    }
+
+    #[test]
+    fn test_schema_version_mismatch() {
+        let db = Database::open_memory().unwrap();
+        // Tamper with the schema version to trigger the mismatch error
+        db.conn
+            .execute("UPDATE schema_version SET version = 999", [])
+            .unwrap();
+        let result = db.validate_schema_version();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Schema version mismatch"));
+        assert!(msg.contains("999"));
+    }
+
+    #[test]
+    fn test_delete_session() {
+        let db = Database::open_memory().unwrap();
+        db.upsert_conversation(
+            "sess-del",
+            Some("slug-del"),
+            "proj",
+            Some("2026-03-20T01:00:00Z"),
+            Some("2026-03-20T02:00:00Z"),
+            "/path.jsonl",
+            None,
+        )
+        .unwrap();
+        db.insert_message(
+            "sess-del",
+            Some("2026-03-20T01:00:00Z"),
+            "user",
+            "hello",
+            "user",
+        )
+        .unwrap();
+        db.record_source_file(
+            Path::new("/path.jsonl"),
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000),
+            "sess-del",
+        )
+        .unwrap();
+
+        // Verify data exists
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.conversation_count, 1);
+        assert_eq!(stats.message_count, 1);
+
+        // Delete the session
+        db.delete_session("sess-del").unwrap();
+
+        // Verify everything is gone
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.conversation_count, 0);
+        assert_eq!(stats.message_count, 0);
+
+        // Source file record should also be gone
+        assert!(db
+            .needs_reindex(
+                Path::new("/path.jsonl"),
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000)
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_last_updated_memory_db() {
+        let db = Database::open_memory().unwrap();
+        // In-memory DB should return None for last_updated
+        assert!(db.last_updated().is_none());
     }
 }

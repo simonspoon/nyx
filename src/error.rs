@@ -24,6 +24,11 @@ pub enum Error {
     #[error("Conversation not found: {0}")]
     ConversationNotFound(String),
 
+    #[error(
+        "Schema version mismatch: expected {expected}, found {found}. Run `nyx index --rebuild` to recreate the index."
+    )]
+    SchemaMismatch { expected: i32, found: i32 },
+
     #[error("{0}")]
     Other(String),
 }
