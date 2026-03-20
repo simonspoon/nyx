@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Index and search Claude Code conversation history"
 license = "MIT"
+authors = ["Simon <simon@sjspoon.com>"]
+repository = "https://github.com/simonspoon/nyx"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
