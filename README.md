@@ -4,8 +4,14 @@ Index and search Claude Code conversation history.
 
 ## Install
 
+### From GitHub Releases
+
+Download a pre-built binary from [Releases](https://github.com/simonspoon/nyx/releases) and place it on your PATH.
+
+### From source
+
 ```bash
-cargo install --path .
+cargo install --git https://github.com/simonspoon/nyx.git
 ```
 
 ## Usage
