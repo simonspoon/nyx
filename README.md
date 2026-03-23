@@ -4,6 +4,12 @@ Index and search Claude Code conversation history.
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install simonspoon/tap/nyx
+```
+
 ### From GitHub Releases
 
 Download a pre-built binary from [Releases](https://github.com/simonspoon/nyx/releases) and place it on your PATH.
