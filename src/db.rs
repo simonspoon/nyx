@@ -548,12 +548,13 @@ mod tests {
         assert_eq!(stats.message_count, 0);
 
         // Source file record should also be gone
-        assert!(db
-            .needs_reindex(
+        assert!(
+            db.needs_reindex(
                 Path::new("/path.jsonl"),
                 SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000)
             )
-            .unwrap());
+            .unwrap()
+        );
     }
 
     #[test]
