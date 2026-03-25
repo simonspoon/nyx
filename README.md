@@ -1,6 +1,10 @@
 # nyx
 
-Index and search Claude Code conversation history.
+Index and search Claude Code conversation history from the command line.
+
+## Overview
+
+Nyx reads JSONL conversation files from `~/.claude/projects/`, parses them into structured records, and indexes the text content into a SQLite database with FTS5 full-text search. The index enables fast, flexible searching across all conversations with project and time filtering.
 
 ## Install
 
@@ -56,7 +60,11 @@ nyx search "sqlite" --project claudehub
 nyx search "deployment" --last 7d
 ```
 
-Full-text search with FTS5. Results are grouped by conversation with highlighted matches.
+Full-text search with FTS5. Results are grouped by conversation with highlighted matches. Limited to 100 results, ordered newest first.
+
+Options:
+- `--project <PROJECT>` — Filter results to a specific project
+- `--last <DURATION>` — Filter to recent conversations: `7d` (days), `24h` (hours), `30m` (minutes)
 
 ### List conversations
 
@@ -84,9 +92,37 @@ nyx --json status
 nyx --json list
 ```
 
-## How it works
+## Architecture
 
-nyx reads Claude Code's JSONL conversation files stored in `~/.claude/projects/`, parses them into structured records, and indexes the text content into a SQLite database with FTS5 full-text search. The index lives at `~/.nyx/index.db`.
+```
+main.rs        Entry point, dispatches commands
+cli.rs         Clap-based CLI definition
+db.rs          Database connection, schema init, CRUD
+models.rs      Serde deserialization of JSONL record types
+indexer.rs     File discovery, parsing, incremental indexing
+search.rs      FTS5 queries, listing, transcript retrieval
+output.rs      Human and JSON formatting
+error.rs       Custom error types
+```
+
+### Database
+
+Stored at `~/.nyx/index.db` (SQLite with WAL mode).
+
+Tables:
+- **conversations** — Session ID, slug, project, timestamps, custom title
+- **messages** — Session ID, timestamp, role, content, record type
+- **messages_fts** — FTS5 virtual table for full-text search (unicode61 tokenizer)
+- **source_files** — Mtime tracking for incremental indexing
+
+### Record Types
+
+Nyx parses these JSONL record types from Claude Code conversation files:
+- **User** — User messages (text or block-based content)
+- **Assistant** — Claude responses (text, thinking blocks, tool usage)
+- **System** — System events
+- **CustomTitle** — User-defined conversation titles
+- Progress and FileHistorySnapshot records are skipped during indexing.
 
 ## License
 
