@@ -363,10 +363,7 @@ pub fn detect_friction(
     let mut stmt = db.conn.prepare(sql)?;
 
     type MessageRow = (i64, String, Option<String>, String, Option<String>, String);
-    let rows: Vec<MessageRow> = if let Some(
-        ref c,
-    ) = cutoff
-    {
+    let rows: Vec<MessageRow> = if let Some(ref c) = cutoff {
         stmt.query_map(params![c], |row| {
             Ok((
                 row.get(0)?,
@@ -657,7 +654,11 @@ mod tests {
     fn test_detect_friction_finds_patterns() {
         let db = setup_test_db();
         let results = detect_friction(&db, None, None).unwrap();
-        assert!(results.len() >= 2, "Expected at least 2 friction matches, got {}", results.len());
+        assert!(
+            results.len() >= 2,
+            "Expected at least 2 friction matches, got {}",
+            results.len()
+        );
     }
 
     #[test]
@@ -677,9 +678,8 @@ mod tests {
     #[test]
     fn test_detect_friction_no_matches() {
         let db = Database::open_memory().unwrap();
-        db.upsert_conversation(
-            "sess-1", None, "proj", None, None, "/p.jsonl", None,
-        ).unwrap();
+        db.upsert_conversation("sess-1", None, "proj", None, None, "/p.jsonl", None)
+            .unwrap();
         db.insert_message(
             "sess-1",
             Some("2026-03-20T01:00:00Z"),
@@ -697,8 +697,12 @@ mod tests {
         let db = setup_test_db();
         let results = detect_friction(&db, None, None).unwrap();
 
-        let has_correction = results.iter().any(|r| r.friction_type == FrictionType::Correction);
-        let has_frustration = results.iter().any(|r| r.friction_type == FrictionType::Frustration);
+        let has_correction = results
+            .iter()
+            .any(|r| r.friction_type == FrictionType::Correction);
+        let has_frustration = results
+            .iter()
+            .any(|r| r.friction_type == FrictionType::Frustration);
         assert!(has_correction, "Should detect correction");
         assert!(has_frustration, "Should detect frustration");
     }
@@ -760,39 +764,69 @@ mod tests {
     #[test]
     fn test_starts_with_patterns() {
         let db = Database::open_memory().unwrap();
-        db.upsert_conversation("s1", None, "p", None, None, "/p.jsonl", None).unwrap();
+        db.upsert_conversation("s1", None, "p", None, None, "/p.jsonl", None)
+            .unwrap();
 
         // "No," at start should match
-        db.insert_message("s1", Some("2026-03-20T01:00:00Z"), "user", "No, do it differently", "user").unwrap();
+        db.insert_message(
+            "s1",
+            Some("2026-03-20T01:00:00Z"),
+            "user",
+            "No, do it differently",
+            "user",
+        )
+        .unwrap();
         let results = detect_friction(&db, None, None).unwrap();
         assert!(!results.is_empty(), "Should match 'No,' at start");
 
         // "no" buried in a sentence should NOT match starts_with patterns
         let db2 = Database::open_memory().unwrap();
-        db2.upsert_conversation("s2", None, "p", None, None, "/p.jsonl", None).unwrap();
-        db2.insert_message("s2", Some("2026-03-20T01:00:00Z"), "user", "I have no idea how to do this", "user").unwrap();
+        db2.upsert_conversation("s2", None, "p", None, None, "/p.jsonl", None)
+            .unwrap();
+        db2.insert_message(
+            "s2",
+            Some("2026-03-20T01:00:00Z"),
+            "user",
+            "I have no idea how to do this",
+            "user",
+        )
+        .unwrap();
         let results2 = detect_friction(&db2, None, None).unwrap();
         // "no" appears mid-sentence, but starts_with patterns won't fire.
         // However, "no idea" doesn't match any non-starts_with pattern either.
-        assert!(results2.is_empty(), "Should not match 'no' in middle of sentence");
+        assert!(
+            results2.is_empty(),
+            "Should not match 'no' in middle of sentence"
+        );
     }
 
     #[test]
     fn test_since_filter() {
         let db = Database::open_memory().unwrap();
         db.upsert_conversation(
-            "s1", None, "p",
+            "s1",
+            None,
+            "p",
             Some("2020-01-01T00:00:00Z"),
             Some("2020-01-01T01:00:00Z"),
-            "/p.jsonl", None,
-        ).unwrap();
+            "/p.jsonl",
+            None,
+        )
+        .unwrap();
         db.insert_message(
-            "s1", Some("2020-01-01T00:00:00Z"),
-            "user", "No, that's wrong", "user",
-        ).unwrap();
+            "s1",
+            Some("2020-01-01T00:00:00Z"),
+            "user",
+            "No, that's wrong",
+            "user",
+        )
+        .unwrap();
 
         // With a 1-day window, the 2020 message should be excluded
         let results = detect_friction(&db, Some("1d"), None).unwrap();
-        assert!(results.is_empty(), "Old message should be filtered out by --since");
+        assert!(
+            results.is_empty(),
+            "Old message should be filtered out by --since"
+        );
     }
 }

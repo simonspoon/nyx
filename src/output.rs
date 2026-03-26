@@ -352,10 +352,7 @@ fn print_friction_human(results: &[FrictionMatch]) {
             println!("   Claude: {}", ctx);
         }
         println!("   You: {}", r.user_message);
-        println!(
-            "   Matched: \"{}\" ({})\n",
-            r.matched_phrase, r.severity
-        );
+        println!("   Matched: \"{}\" ({})\n", r.matched_phrase, r.severity);
     }
 }
 
@@ -448,7 +445,10 @@ pub fn print_friction_suda_export(results: &[FrictionMatch]) {
         return;
     }
 
-    println!("# Suda store commands for {} friction pattern(s):", results.len());
+    println!(
+        "# Suda store commands for {} friction pattern(s):",
+        results.len()
+    );
     println!("# Review and run the ones you want to save:\n");
 
     for r in results {
