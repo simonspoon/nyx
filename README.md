@@ -82,6 +82,24 @@ nyx show luminous-toasting-ember
 
 Prints the conversation as a readable transcript (user and assistant turns only). Accepts slugs or session ID prefixes.
 
+### Detect friction patterns
+
+```bash
+nyx friction
+nyx friction --since 7d
+nyx friction --since 30d --limit 20
+nyx friction --summary
+nyx friction --export-suda
+```
+
+Scans user messages for friction signals — corrections, redirections, and frustration — by matching against known phrase patterns. Each match includes the conversation slug, project, timestamp, severity (low/medium/high), and the triggering message with surrounding context.
+
+Options:
+- `--since <DURATION>` — Limit scan to recent conversations: `7d` (days), `24h` (hours), `30d` (minutes)
+- `--limit <N>` — Maximum number of results to return
+- `--summary` — Show an aggregate summary grouped by friction type and severity instead of individual matches
+- `--export-suda` — Output `suda store` commands for each detected friction pattern
+
 ### JSON output
 
 All commands support `--json` for machine-readable output:
@@ -90,6 +108,7 @@ All commands support `--json` for machine-readable output:
 nyx --json search "query"
 nyx --json status
 nyx --json list
+nyx --json friction --since 7d
 ```
 
 ## Architecture
@@ -101,6 +120,7 @@ db.rs          Database connection, schema init, CRUD
 models.rs      Serde deserialization of JSONL record types
 indexer.rs     File discovery, parsing, incremental indexing
 search.rs      FTS5 queries, listing, transcript retrieval
+friction.rs    Friction pattern detection and classification
 output.rs      Human and JSON formatting
 error.rs       Custom error types
 ```
