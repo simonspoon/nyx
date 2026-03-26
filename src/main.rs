@@ -1,6 +1,7 @@
 mod cli;
 mod db;
 mod error;
+mod friction;
 mod indexer;
 mod models;
 mod output;
@@ -31,6 +32,12 @@ fn run(cli: &Cli) -> Result<()> {
         } => cmd_search(query, project.as_deref(), last.as_deref(), cli.json),
         Command::List => cmd_list(cli.json),
         Command::Show { slug } => cmd_show(slug, cli.json),
+        Command::Friction {
+            since,
+            limit,
+            summary,
+            export_suda,
+        } => cmd_friction(since.as_deref(), *limit, *summary, *export_suda, cli.json),
     }
 }
 
@@ -93,5 +100,30 @@ fn cmd_show(slug: &str, json: bool) -> Result<()> {
     let db = Database::open(&db_path)?;
     let (conv, messages) = search::show_conversation(&db, slug)?;
     output::print_transcript(&conv, &messages, json);
+    Ok(())
+}
+
+fn cmd_friction(
+    since: Option<&str>,
+    limit: Option<usize>,
+    summary: bool,
+    export_suda: bool,
+    json: bool,
+) -> Result<()> {
+    let db_path = db::default_db_path();
+    if !db_path.exists() {
+        return Err(error::Error::NoIndex(db_path));
+    }
+    let db = Database::open(&db_path)?;
+    let results = friction::detect_friction(&db, since, limit)?;
+
+    if summary {
+        let summary = friction::summarize(&results);
+        output::print_friction_summary(&summary, json);
+    } else if export_suda {
+        output::print_friction_suda_export(&results);
+    } else {
+        output::print_friction_results(&results, json);
+    }
     Ok(())
 }

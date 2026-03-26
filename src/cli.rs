@@ -45,4 +45,23 @@ pub enum Command {
         /// Conversation slug (e.g., luminous-toasting-ember)
         slug: String,
     },
+
+    /// Detect friction patterns in conversation history
+    Friction {
+        /// Time range to scan (e.g., 7d, 24h, 30d)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Maximum number of results
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Show friction summary grouped by category
+        #[arg(long)]
+        summary: bool,
+
+        /// Output suda store commands for detected friction
+        #[arg(long)]
+        export_suda: bool,
+    },
 }

@@ -3,6 +3,7 @@ use std::path::Path;
 use serde_json::json;
 
 use crate::db::{Database, DbStats};
+use crate::friction::{FrictionMatch, FrictionSummary};
 use crate::search::{ConversationEntry, SearchResult, TranscriptMessage};
 
 /// Format and print status output.
@@ -300,6 +301,158 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+/// Format and print friction results.
+pub fn print_friction_results(results: &[FrictionMatch], json: bool) {
+    if json {
+        print_friction_json(results);
+    } else {
+        print_friction_human(results);
+    }
+}
+
+fn print_friction_human(results: &[FrictionMatch]) {
+    if results.is_empty() {
+        println!("No friction patterns detected.");
+        return;
+    }
+
+    println!("{} friction pattern(s) detected:\n", results.len());
+
+    for (i, r) in results.iter().enumerate() {
+        let ts = r
+            .timestamp
+            .as_deref()
+            .map(format_date_short)
+            .unwrap_or_else(|| "?".to_string());
+        let slug = r
+            .slug
+            .as_deref()
+            .unwrap_or(&r.session_id[..8.min(r.session_id.len())]);
+
+        let severity_color = match r.severity {
+            crate::friction::Severity::High => "\x1b[1;31m",
+            crate::friction::Severity::Medium => "\x1b[1;33m",
+            crate::friction::Severity::Low => "\x1b[0;33m",
+        };
+
+        println!(
+            "{}. [{}] {} [{}] {}{}\x1b[0m",
+            i + 1,
+            ts,
+            slug,
+            r.project,
+            severity_color,
+            r.friction_type
+        );
+
+        if let Some(ref ctx) = r.context {
+            println!("   Claude: {}", ctx);
+        }
+        println!("   You: {}", r.user_message);
+        println!(
+            "   Matched: \"{}\" ({})\n",
+            r.matched_phrase, r.severity
+        );
+    }
+}
+
+fn print_friction_json(results: &[FrictionMatch]) {
+    let items: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "session_id": r.session_id,
+                "slug": r.slug,
+                "project": r.project,
+                "timestamp": r.timestamp,
+                "user_message": r.user_message,
+                "context": r.context,
+                "friction_type": r.friction_type.label(),
+                "severity": r.severity.label(),
+                "matched_phrase": r.matched_phrase,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string(&items).unwrap());
+}
+
+/// Format and print friction summary.
+pub fn print_friction_summary(summary: &FrictionSummary, json: bool) {
+    if json {
+        print_friction_summary_json(summary);
+    } else {
+        print_friction_summary_human(summary);
+    }
+}
+
+fn print_friction_summary_human(summary: &FrictionSummary) {
+    if summary.total == 0 {
+        println!("No friction patterns detected.");
+        return;
+    }
+
+    println!("Friction Summary ({} total)\n", summary.total);
+
+    println!("By type:");
+    for (ft, count) in &summary.by_type {
+        let pct = (*count as f64 / summary.total as f64) * 100.0;
+        println!("  {:<14} {:>4} ({:.0}%)", ft.label(), count, pct);
+    }
+
+    println!("\nBy severity:");
+    for (sev, count) in &summary.by_severity {
+        let pct = (*count as f64 / summary.total as f64) * 100.0;
+        println!("  {:<14} {:>4} ({:.0}%)", sev.label(), count, pct);
+    }
+
+    if !summary.top_phrases.is_empty() {
+        println!("\nTop matched phrases:");
+        for (phrase, count) in &summary.top_phrases {
+            println!("  \"{:<30}\" {:>4}", phrase, count);
+        }
+    }
+}
+
+fn print_friction_summary_json(summary: &FrictionSummary) {
+    let by_type: Vec<serde_json::Value> = summary
+        .by_type
+        .iter()
+        .map(|(ft, c)| json!({"type": ft.label(), "count": c}))
+        .collect();
+    let by_severity: Vec<serde_json::Value> = summary
+        .by_severity
+        .iter()
+        .map(|(s, c)| json!({"severity": s.label(), "count": c}))
+        .collect();
+    let top_phrases: Vec<serde_json::Value> = summary
+        .top_phrases
+        .iter()
+        .map(|(p, c)| json!({"phrase": p, "count": c}))
+        .collect();
+    let output = json!({
+        "total": summary.total,
+        "by_type": by_type,
+        "by_severity": by_severity,
+        "top_phrases": top_phrases,
+    });
+    println!("{}", serde_json::to_string(&output).unwrap());
+}
+
+/// Print suda export commands for friction results.
+pub fn print_friction_suda_export(results: &[FrictionMatch]) {
+    if results.is_empty() {
+        println!("No friction patterns to export.");
+        return;
+    }
+
+    println!("# Suda store commands for {} friction pattern(s):", results.len());
+    println!("# Review and run the ones you want to save:\n");
+
+    for r in results {
+        println!("{}\n", crate::friction::format_suda_command(r));
     }
 }
 

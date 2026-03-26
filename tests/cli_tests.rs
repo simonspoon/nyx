@@ -247,6 +247,128 @@ fn test_incremental_index() {
         .stdout(predicate::str::contains("skipped"));
 }
 
+#[test]
+fn test_friction_basic() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["friction"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("friction pattern(s) detected"));
+}
+
+#[test]
+fn test_friction_json() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["--json", "friction"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("friction_type"))
+        .stdout(predicate::str::contains("severity"))
+        .stdout(predicate::str::contains("matched_phrase"));
+}
+
+#[test]
+fn test_friction_with_limit() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["friction", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 friction pattern(s) detected"));
+}
+
+#[test]
+fn test_friction_summary() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["friction", "--summary"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Friction Summary"))
+        .stdout(predicate::str::contains("By type:"))
+        .stdout(predicate::str::contains("By severity:"));
+}
+
+#[test]
+fn test_friction_summary_json() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["--json", "friction", "--summary"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("by_type"))
+        .stdout(predicate::str::contains("by_severity"))
+        .stdout(predicate::str::contains("total"));
+}
+
+#[test]
+fn test_friction_export_suda() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home_with_friction(&dir);
+
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["friction", "--export-suda"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("suda store --type feedback"));
+}
+
+#[test]
+fn test_friction_no_index() {
+    let dir = TempDir::new().unwrap();
+    nyx_cmd()
+        .env("HOME", dir.path())
+        .args(["friction"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No index found"));
+}
+
+#[test]
+fn test_friction_empty_results() {
+    let dir = TempDir::new().unwrap();
+    let home = setup_indexed_home(&dir);
+
+    // The standard test data has no friction patterns
+    nyx_cmd()
+        .env("HOME", &home)
+        .args(["friction"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No friction patterns detected"));
+}
+
+#[test]
+fn test_friction_help() {
+    nyx_cmd()
+        .args(["friction", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("friction"))
+        .stdout(predicate::str::contains("--since"))
+        .stdout(predicate::str::contains("--limit"))
+        .stdout(predicate::str::contains("--summary"))
+        .stdout(predicate::str::contains("--export-suda"));
+}
+
 // --- Helpers ---
 
 fn setup_indexed_home(dir: &TempDir) -> std::path::PathBuf {
@@ -283,6 +405,50 @@ fn setup_indexed_home_multi(dir: &TempDir) -> std::path::PathBuf {
     let src2 = dir.path().join("-Users-testuser-otherproject");
     let dst2 = claude_projects.join("-Users-testuser-otherproject");
     copy_dir(&src2, &dst2);
+
+    nyx_cmd().env("HOME", &home).arg("index").assert().success();
+
+    home
+}
+
+/// Create test data that contains friction patterns.
+fn create_friction_test_data(dir: &TempDir) -> std::path::PathBuf {
+    let project_dir = dir.path().join("-Users-testuser-frictionproject");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let session_file = project_dir.join("friction-sess-1.jsonl");
+    let mut f = std::fs::File::create(&session_file).unwrap();
+
+    // Assistant message
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"I've implemented it using a complex factory pattern with dependency injection."}}],"model":"claude-opus-4-6"}},"timestamp":"2026-03-20T10:00:00Z","sessionId":"friction-sess-1","slug":"friction-test-conv"}}"#).unwrap();
+
+    // User correction
+    writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"No, that's not what I asked. I want something simpler."}},"timestamp":"2026-03-20T10:01:00Z","sessionId":"friction-sess-1"}}"#).unwrap();
+
+    // Assistant retry
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Let me try with a simpler approach using basic structs."}}],"model":"claude-opus-4-6"}},"timestamp":"2026-03-20T10:02:00Z","sessionId":"friction-sess-1","slug":"friction-test-conv"}}"#).unwrap();
+
+    // User frustration
+    writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"Why did you add all those extra abstractions? I already told you to keep it simple."}},"timestamp":"2026-03-20T10:03:00Z","sessionId":"friction-sess-1"}}"#).unwrap();
+
+    // Another assistant + redirection
+    writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"Here is another attempt."}}],"model":"claude-opus-4-6"}},"timestamp":"2026-03-20T10:04:00Z","sessionId":"friction-sess-1","slug":"friction-test-conv"}}"#).unwrap();
+
+    writeln!(f, r#"{{"type":"user","message":{{"role":"user","content":"Just do it with a plain function instead."}},"timestamp":"2026-03-20T10:05:00Z","sessionId":"friction-sess-1"}}"#).unwrap();
+
+    dir.path().to_path_buf()
+}
+
+fn setup_indexed_home_with_friction(dir: &TempDir) -> std::path::PathBuf {
+    let data_dir = create_friction_test_data(dir);
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let claude_projects = home.join(".claude").join("projects");
+    std::fs::create_dir_all(&claude_projects).unwrap();
+
+    let src_project = data_dir.join("-Users-testuser-frictionproject");
+    let dst_project = claude_projects.join("-Users-testuser-frictionproject");
+    copy_dir(&src_project, &dst_project);
 
     nyx_cmd().env("HOME", &home).arg("index").assert().success();
 
