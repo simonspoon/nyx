@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" width="128" height="128" alt="nyx">
+</p>
+
 # nyx
 
 Index and search Claude Code conversation history from the command line.
