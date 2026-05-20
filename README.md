@@ -99,7 +99,7 @@ nyx friction --export-suda
 Scans user messages for friction signals — corrections, redirections, and frustration — by matching against known phrase patterns. Each match includes the conversation slug, project, timestamp, severity (low/medium/high), and the triggering message with surrounding context.
 
 Options:
-- `--since <DURATION>` — Limit scan to recent conversations: `7d` (days), `24h` (hours), `30d` (minutes)
+- `--since <DURATION>` — Limit scan to recent conversations: `7d` (days), `24h` (hours), `30m` (minutes)
 - `--limit <N>` — Maximum number of results to return
 - `--summary` — Show an aggregate summary grouped by friction type and severity instead of individual matches
 - `--export-suda` — Output `suda store` commands for each detected friction pattern
