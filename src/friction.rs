@@ -524,13 +524,13 @@ pub fn summarize(results: &[FrictionMatch]) -> FrictionSummary {
     }
 
     let mut by_type: Vec<_> = type_counts.into_iter().collect();
-    by_type.sort_by(|a, b| b.1.cmp(&a.1));
+    by_type.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let mut by_severity: Vec<_> = severity_counts.into_iter().collect();
-    by_severity.sort_by(|a, b| b.1.cmp(&a.1));
+    by_severity.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let mut top_phrases: Vec<_> = phrase_counts.into_iter().collect();
-    top_phrases.sort_by(|a, b| b.1.cmp(&a.1));
+    top_phrases.sort_by_key(|b| std::cmp::Reverse(b.1));
     top_phrases.truncate(10);
 
     FrictionSummary {
