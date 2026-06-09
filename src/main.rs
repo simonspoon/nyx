@@ -14,6 +14,14 @@ use db::Database;
 use error::Result;
 
 fn main() {
+    // Restore default SIGPIPE behavior so the process terminates quietly
+    // when a downstream reader (e.g. `head`) closes the pipe early, instead
+    // of panicking on a failed write to stdout.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
     if let Err(e) = run(&cli) {
         eprintln!("Error: {}", e);
