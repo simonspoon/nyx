@@ -100,10 +100,11 @@ fn delete_session_tx(tx: &rusqlite::Transaction, session_id: &str) -> Result<()>
         "DELETE FROM conversations WHERE session_id = ?1",
         rusqlite::params![session_id],
     )?;
-    tx.execute(
-        "DELETE FROM source_files WHERE session_id = ?1",
-        rusqlite::params![session_id],
-    )?;
+    // NOTE: We deliberately do NOT delete from source_files here. Multiple files
+    // (a main session file plus its subagent files) can share a session_id, so a
+    // session-scoped delete would wipe siblings' rows and force them to be
+    // re-indexed every run. record_source_file_tx uses INSERT OR REPLACE keyed on
+    // the path PK, so the current file's mtime row is refreshed correctly.
     Ok(())
 }
 
@@ -495,6 +496,41 @@ mod tests {
         let (indexed, skipped) = index_all(&mut db, dir.path()).unwrap();
         assert_eq!(indexed, 0);
         assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn test_index_all_incremental_shared_session_id() {
+        let mut db = Database::open_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a fake project structure with a main session file AND a
+        // subagent file that maps to the same session_id ("session-1").
+        let project_dir = dir.path().join("-Users-test-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let main_path = project_dir.join("session-1.jsonl");
+        let main_data = r#"{"type":"user","message":{"role":"user","content":"main"},"timestamp":"2026-03-20T01:00:00Z","sessionId":"session-1"}
+"#;
+        std::fs::write(&main_path, main_data).unwrap();
+
+        let subagent_dir = project_dir.join("session-1").join("subagents");
+        std::fs::create_dir_all(&subagent_dir).unwrap();
+        let subagent_path = subagent_dir.join("agent-abc.jsonl");
+        let subagent_data = r#"{"type":"user","message":{"role":"user","content":"sub"},"timestamp":"2026-03-20T01:00:00Z","sessionId":"session-1"}
+"#;
+        std::fs::write(&subagent_path, subagent_data).unwrap();
+
+        // First index: both files are new -> both indexed.
+        let (indexed, skipped) = index_all(&mut db, dir.path()).unwrap();
+        assert_eq!(indexed, 2);
+        assert_eq!(skipped, 0);
+
+        // Second index with no changes: both files should be skipped.
+        // Before the fix, delete_session_tx wiped the source_files rows of
+        // siblings sharing session_id "session-1", so both were re-indexed.
+        let (indexed, skipped) = index_all(&mut db, dir.path()).unwrap();
+        assert_eq!(indexed, 0);
+        assert_eq!(skipped, 2);
     }
 
     #[test]
