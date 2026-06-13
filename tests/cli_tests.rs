@@ -319,19 +319,6 @@ fn test_friction_summary_json() {
 }
 
 #[test]
-fn test_friction_export_suda() {
-    let dir = TempDir::new().unwrap();
-    let home = setup_indexed_home_with_friction(&dir);
-
-    nyx_cmd()
-        .env("HOME", &home)
-        .args(["friction", "--export-suda"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("suda store --type feedback"));
-}
-
-#[test]
 fn test_friction_no_index() {
     let dir = TempDir::new().unwrap();
     nyx_cmd()
@@ -365,8 +352,7 @@ fn test_friction_help() {
         .stdout(predicate::str::contains("friction"))
         .stdout(predicate::str::contains("--since"))
         .stdout(predicate::str::contains("--limit"))
-        .stdout(predicate::str::contains("--summary"))
-        .stdout(predicate::str::contains("--export-suda"));
+        .stdout(predicate::str::contains("--summary"));
 }
 
 // --- Helpers ---

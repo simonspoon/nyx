@@ -59,9 +59,5 @@ pub enum Command {
         /// Show friction summary grouped by category
         #[arg(long)]
         summary: bool,
-
-        /// Output suda store commands for detected friction
-        #[arg(long)]
-        export_suda: bool,
     },
 }

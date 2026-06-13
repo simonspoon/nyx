@@ -541,44 +541,6 @@ pub fn summarize(results: &[FrictionMatch]) -> FrictionSummary {
     }
 }
 
-/// Format a friction match as a suda store command.
-pub fn format_suda_command(m: &FrictionMatch) -> String {
-    let name = format!(
-        "friction-{}-{}",
-        m.friction_type.label(),
-        m.timestamp
-            .as_deref()
-            .unwrap_or("unknown")
-            .get(..10)
-            .unwrap_or("unknown")
-    );
-
-    let desc = format!(
-        "Friction detected: {} ({} severity) - matched '{}'",
-        m.friction_type, m.severity, m.matched_phrase
-    );
-
-    // Build content with context
-    let mut content = format!("User said: {}", m.user_message);
-    if let Some(ref ctx) = m.context {
-        content = format!("Claude said: {}\n\n{}", ctx, content);
-    }
-    if let Some(ref ts) = m.timestamp {
-        content = format!("{}\n\nTimestamp: {}", content, ts);
-    }
-    content = format!("{}\nProject: {}", content, m.project);
-
-    // Escape single quotes in content for shell safety
-    let content_escaped = content.replace('\'', "'\\''");
-    let desc_escaped = desc.replace('\'', "'\\''");
-    let name_escaped = name.replace('\'', "'\\''");
-
-    format!(
-        "suda store --type feedback --name '{}' --description '{}' '{}'",
-        name_escaped, desc_escaped, content_escaped
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,26 +678,6 @@ mod tests {
         assert!(!summary.by_type.is_empty());
         assert!(!summary.by_severity.is_empty());
         assert!(!summary.top_phrases.is_empty());
-    }
-
-    #[test]
-    fn test_format_suda_command() {
-        let m = FrictionMatch {
-            session_id: "sess-1".to_string(),
-            slug: Some("test-slug".to_string()),
-            project: "myproject".to_string(),
-            timestamp: Some("2026-03-20T01:01:00Z".to_string()),
-            user_message: "No, that's wrong.".to_string(),
-            context: Some("Here is my approach.".to_string()),
-            friction_type: FrictionType::Correction,
-            severity: Severity::High,
-            matched_phrase: "wrong".to_string(),
-        };
-        let cmd = format_suda_command(&m);
-        assert!(cmd.starts_with("suda store --type feedback"));
-        assert!(cmd.contains("friction-correction-2026-03-20"));
-        assert!(cmd.contains("No, that"), "Should contain user message text");
-        assert!(cmd.contains("wrong."), "Should contain user message text");
     }
 
     #[test]

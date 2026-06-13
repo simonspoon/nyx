@@ -438,24 +438,6 @@ fn print_friction_summary_json(summary: &FrictionSummary) {
     println!("{}", serde_json::to_string(&output).unwrap());
 }
 
-/// Print suda export commands for friction results.
-pub fn print_friction_suda_export(results: &[FrictionMatch]) {
-    if results.is_empty() {
-        println!("No friction patterns to export.");
-        return;
-    }
-
-    println!(
-        "# Suda store commands for {} friction pattern(s):",
-        results.len()
-    );
-    println!("# Review and run the ones you want to save:\n");
-
-    for r in results {
-        println!("{}\n", crate::friction::format_suda_command(r));
-    }
-}
-
 /// Format an ISO 8601 timestamp to a short date string.
 fn format_date_short(ts: &str) -> String {
     // Input: "2026-03-20T01:26:11.953Z" or "2026-03-20 14:32"

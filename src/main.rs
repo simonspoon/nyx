@@ -44,8 +44,7 @@ fn run(cli: &Cli) -> Result<()> {
             since,
             limit,
             summary,
-            export_suda,
-        } => cmd_friction(since.as_deref(), *limit, *summary, *export_suda, cli.json),
+        } => cmd_friction(since.as_deref(), *limit, *summary, cli.json),
     }
 }
 
@@ -115,7 +114,6 @@ fn cmd_friction(
     since: Option<&str>,
     limit: Option<usize>,
     summary: bool,
-    export_suda: bool,
     json: bool,
 ) -> Result<()> {
     let db_path = db::default_db_path();
@@ -128,8 +126,6 @@ fn cmd_friction(
     if summary {
         let summary = friction::summarize(&results);
         output::print_friction_summary(&summary, json);
-    } else if export_suda {
-        output::print_friction_suda_export(&results);
     } else {
         output::print_friction_results(&results, json);
     }
