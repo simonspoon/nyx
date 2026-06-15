@@ -21,7 +21,11 @@ pub enum Command {
     Status,
 
     /// Build or update the search index
-    Index,
+    Index {
+        /// Drop and recreate all tables, then perform a full re-index
+        #[arg(long)]
+        rebuild: bool,
+    },
 
     /// Full-text search across conversations
     Search {
@@ -59,5 +63,20 @@ pub enum Command {
         /// Show friction summary grouped by category
         #[arg(long)]
         summary: bool,
+    },
+
+    /// Aggregate token usage and estimated cost
+    Usage {
+        /// Time scope (e.g., 7d, 24h, 30d)
+        #[arg(long)]
+        last: Option<String>,
+
+        /// Scope to a specific project
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Group results by: session, project, model, or day
+        #[arg(long, default_value = "model")]
+        by: String,
     },
 }

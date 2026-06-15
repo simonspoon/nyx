@@ -5,7 +5,24 @@ use rusqlite::{Connection, params};
 
 use crate::error::{Error, Result};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
+
+/// Upsert one usage row keyed on request_id. A single billed response is split
+/// across several JSONL lines sharing a request_id; the final output_tokens
+/// appears on the last block, so on conflict we keep the MAX of each token
+/// column. Used by both the `Database` method and the indexer's tx version.
+pub(crate) const MESSAGE_USAGE_UPSERT: &str = "INSERT INTO message_usage \
+    (session_id, timestamp, request_id, model, input_tokens, output_tokens, \
+     cache_creation_input_tokens, cache_read_input_tokens, cache_creation_5m, \
+     cache_creation_1h, service_tier, speed) \
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+    ON CONFLICT(request_id) DO UPDATE SET \
+        input_tokens = MAX(COALESCE(input_tokens, 0), COALESCE(excluded.input_tokens, 0)), \
+        output_tokens = MAX(COALESCE(output_tokens, 0), COALESCE(excluded.output_tokens, 0)), \
+        cache_creation_input_tokens = MAX(COALESCE(cache_creation_input_tokens, 0), COALESCE(excluded.cache_creation_input_tokens, 0)), \
+        cache_read_input_tokens = MAX(COALESCE(cache_read_input_tokens, 0), COALESCE(excluded.cache_read_input_tokens, 0)), \
+        cache_creation_5m = MAX(COALESCE(cache_creation_5m, 0), COALESCE(excluded.cache_creation_5m, 0)), \
+        cache_creation_1h = MAX(COALESCE(cache_creation_1h, 0), COALESCE(excluded.cache_creation_1h, 0))";
 
 pub struct Database {
     pub conn: Connection,
@@ -78,6 +95,52 @@ impl Database {
                 ON conversations(project);
             CREATE INDEX IF NOT EXISTS idx_conversations_slug
                 ON conversations(slug);
+
+            -- Per-API-response token usage, keyed by request_id. A separate
+            -- table (not columns on `messages`) because usage is captured for
+            -- every assistant turn with a usage object, including text-less
+            -- tool-only turns that never produce a `messages` row. Rows are
+            -- deduplicated on request_id: one billed response is split across
+            -- several JSONL lines (one per content block) that share a
+            -- request_id, with output_tokens growing to its final value on the
+            -- last block, so we keep the MAX per column (see insert_message_usage).
+            -- No FK to conversations: usage rows survive the per-session deletes
+            -- in delete_session_tx so sibling files in a session don't collapse.
+            CREATE TABLE IF NOT EXISTS message_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                timestamp TEXT,
+                request_id TEXT,
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                cache_read_input_tokens INTEGER,
+                cache_creation_5m INTEGER,
+                cache_creation_1h INTEGER,
+                service_tier TEXT,
+                speed TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_usage_session
+                ON message_usage(session_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_message_usage_request
+                ON message_usage(request_id);
+
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                timestamp TEXT,
+                tool_use_id TEXT,
+                tool_name TEXT NOT NULL,
+                input TEXT,
+                input_truncated INTEGER NOT NULL DEFAULT 0,
+                is_error INTEGER,
+                FOREIGN KEY (session_id) REFERENCES conversations(session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_session
+                ON tool_calls(session_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_name
+                ON tool_calls(tool_name);
 
             CREATE TABLE IF NOT EXISTS source_files (
                 path TEXT PRIMARY KEY,
@@ -229,6 +292,66 @@ impl Database {
         Ok(())
     }
 
+    /// Insert a per-assistant-message usage record.
+    #[allow(dead_code)]
+    pub fn insert_message_usage(
+        &self,
+        session_id: &str,
+        timestamp: Option<&str>,
+        request_id: Option<&str>,
+        model: Option<&str>,
+        usage: &crate::models::Usage,
+    ) -> Result<()> {
+        let cc = usage.cache_creation.as_ref();
+        self.conn.execute(
+            MESSAGE_USAGE_UPSERT,
+            params![
+                session_id,
+                timestamp,
+                request_id,
+                model,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_creation_input_tokens,
+                usage.cache_read_input_tokens,
+                cc.and_then(|c| c.ephemeral_5m_input_tokens),
+                cc.and_then(|c| c.ephemeral_1h_input_tokens),
+                usage.service_tier.as_deref(),
+                usage.speed.as_deref(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a tool-call record.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn insert_tool_call(
+        &self,
+        session_id: &str,
+        timestamp: Option<&str>,
+        tool_use_id: Option<&str>,
+        tool_name: &str,
+        input: Option<&str>,
+        input_truncated: bool,
+        is_error: Option<bool>,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tool_calls (session_id, timestamp, tool_use_id, tool_name,
+                input, input_truncated, is_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                session_id,
+                timestamp,
+                tool_use_id,
+                tool_name,
+                input,
+                input_truncated as i64,
+                is_error,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
     /// Delete all data for a session (for re-indexing).
     #[allow(dead_code)]
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -313,6 +436,30 @@ pub struct DbStats {
     pub project_count: i64,
     pub first_date: Option<String>,
     pub last_date: Option<String>,
+}
+
+/// Drop all nyx tables/objects so a subsequent `Database::open` recreates them
+/// at the current schema version. Used by `nyx index --rebuild`.
+pub fn drop_all(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let conn = Connection::open(path)?;
+    conn.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS messages_ai;
+        DROP TRIGGER IF EXISTS messages_ad;
+        DROP TRIGGER IF EXISTS messages_au;
+        DROP TABLE IF EXISTS messages_fts;
+        DROP TABLE IF EXISTS tool_calls;
+        DROP TABLE IF EXISTS message_usage;
+        DROP TABLE IF EXISTS messages;
+        DROP TABLE IF EXISTS conversations;
+        DROP TABLE IF EXISTS source_files;
+        DROP TABLE IF EXISTS schema_version;
+        ",
+    )?;
+    Ok(())
 }
 
 pub fn default_db_path() -> PathBuf {

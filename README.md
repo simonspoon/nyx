@@ -38,6 +38,9 @@ nyx index
 
 Indexes all JSONL conversation files from `~/.claude/projects/` into a SQLite database at `~/.nyx/index.db`. Supports incremental indexing -- only re-indexes files that have changed.
 
+Options:
+- `--rebuild` — Drop and recreate all tables, then perform a full re-index. Required after a schema version bump (`nyx status` will direct you here if the on-disk schema is out of date).
+
 ### Check status
 
 ```bash
@@ -104,6 +107,26 @@ Options:
 - `--summary` — Show an aggregate summary grouped by friction type and severity instead of individual matches
 - `--export-suda` — Output `suda store` commands for each detected friction pattern
 
+### Aggregate token usage and cost
+
+```bash
+nyx usage
+nyx usage --by project
+nyx usage --by model --last 30d
+nyx usage --by project --json
+```
+
+Aggregates per-message token usage captured during indexing and reports total input/output/cache tokens with an estimated USD cost. Cost is computed at query time from the editable pricing file, so it never needs a re-index. Models with no pricing entry are reported with an unknown cost and listed in a note.
+
+Options:
+- `--by <GROUPING>` — Group results by `model` (default), `project`, `session`, or `day`
+- `--project <PROJECT>` — Scope to a specific project
+- `--last <DURATION>` — Limit to recent activity: `7d` (days), `24h` (hours), `30m` (minutes)
+
+#### Pricing file
+
+Per-model rates live in `~/.nyx/pricing.toml`, which is seeded with current defaults on first use if absent. Each entry maps a model id (or id prefix) to input / output / cache-write-5m / cache-write-1h / cache-read rates per million tokens. Model matching is exact id first, then longest registered prefix. Edit this file to update rates; changes are reflected in `nyx usage` immediately with no re-index.
+
 ### JSON output
 
 All commands support `--json` for machine-readable output:
@@ -113,6 +136,7 @@ nyx --json search "query"
 nyx --json status
 nyx --json list
 nyx --json friction --since 7d
+nyx --json usage --by project
 ```
 
 ## Architecture

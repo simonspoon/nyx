@@ -3,6 +3,7 @@ use serde::Deserialize;
 /// A single line from a JSONL conversation file.
 /// Fields may appear unused but are required for serde deserialization.
 #[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum Record {
@@ -21,6 +22,8 @@ pub enum Record {
         #[serde(rename = "sessionId")]
         session_id: Option<String>,
         slug: Option<String>,
+        #[serde(rename = "requestId")]
+        request_id: Option<String>,
     },
 
     #[serde(rename = "system")]
@@ -68,7 +71,12 @@ pub enum UserContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_result")]
-    ToolResult { content: Option<ToolResultContent> },
+    ToolResult {
+        content: Option<ToolResultContent>,
+        #[serde(rename = "tool_use_id")]
+        tool_use_id: Option<String>,
+        is_error: Option<bool>,
+    },
     #[serde(other)]
     Other,
 }
@@ -95,6 +103,27 @@ pub struct AssistantMessage {
     pub role: Option<String>,
     pub content: Option<AssistantContent>,
     pub model: Option<String>,
+    pub usage: Option<Usage>,
+}
+
+/// Token usage and cost-relevant metadata from an assistant message.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct Usage {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub service_tier: Option<String>,
+    pub speed: Option<String>,
+    pub cache_creation: Option<CacheCreation>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct CacheCreation {
+    pub ephemeral_5m_input_tokens: Option<i64>,
+    pub ephemeral_1h_input_tokens: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +142,11 @@ pub enum AssistantContentBlock {
     #[serde(rename = "thinking")]
     Thinking { thinking: Option<String> },
     #[serde(rename = "tool_use")]
-    ToolUse {},
+    ToolUse {
+        id: Option<String>,
+        name: Option<String>,
+        input: Option<serde_json::Value>,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {},
     #[serde(other)]
@@ -176,6 +209,82 @@ impl Record {
             _ => None,
         }
     }
+
+    /// Get the token usage (only on assistant records that carry it).
+    #[allow(dead_code)]
+    pub fn usage(&self) -> Option<&Usage> {
+        match self {
+            Record::Assistant { message, .. } => message.usage.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Get the model name (only on assistant records).
+    #[allow(dead_code)]
+    pub fn model(&self) -> Option<&str> {
+        match self {
+            Record::Assistant { message, .. } => message.model.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Get the request ID (only on assistant records).
+    #[allow(dead_code)]
+    pub fn request_id(&self) -> Option<&str> {
+        match self {
+            Record::Assistant { request_id, .. } => request_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Get the tool_use blocks (id, name, input) from an assistant record.
+    #[allow(dead_code)]
+    pub fn tool_uses(&self) -> Vec<(Option<&str>, Option<&str>, Option<&serde_json::Value>)> {
+        let mut uses = Vec::new();
+        if let Record::Assistant {
+            message:
+                AssistantMessage {
+                    content: Some(AssistantContent::Blocks(blocks)),
+                    ..
+                },
+            ..
+        } = self
+        {
+            for block in blocks {
+                if let AssistantContentBlock::ToolUse { id, name, input } = block {
+                    uses.push((id.as_deref(), name.as_deref(), input.as_ref()));
+                }
+            }
+        }
+        uses
+    }
+
+    /// Get the tool_result blocks (tool_use_id, is_error) from a user record.
+    #[allow(dead_code)]
+    pub fn tool_results(&self) -> Vec<(Option<&str>, Option<bool>)> {
+        let mut results = Vec::new();
+        if let Record::User {
+            message:
+                UserMessage {
+                    content: UserContent::Blocks(blocks),
+                    ..
+                },
+            ..
+        } = self
+        {
+            for block in blocks {
+                if let UserContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    ..
+                } = block
+                {
+                    results.push((tool_use_id.as_deref(), *is_error));
+                }
+            }
+        }
+        results
+    }
 }
 
 impl UserMessage {
@@ -187,7 +296,9 @@ impl UserMessage {
                 for block in blocks {
                     match block {
                         UserContentBlock::Text { text } => parts.push(text.clone()),
-                        UserContentBlock::ToolResult { content: Some(c) } => {
+                        UserContentBlock::ToolResult {
+                            content: Some(c), ..
+                        } => {
                             if let Some(text) = c.extract_text() {
                                 parts.push(text);
                             }
@@ -535,5 +646,82 @@ mod tests {
         let json = r#"{"type":"custom-title","sessionId":"s1"}"#;
         let record: Record = serde_json::from_str(json).unwrap();
         assert!(record.extract_text().is_none());
+    }
+
+    #[test]
+    fn parse_assistant_usage_and_tool_use() {
+        // Real-shape assistant line: usage object (with cache_creation split),
+        // model, requestId, and a tool_use block.
+        let json = r#"{
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "reading file"},
+                    {"type": "tool_use", "id": "toolu_01EF", "name": "Read",
+                     "input": {"file_path": "/tmp/x"}, "caller": {"type": "direct"}}
+                ],
+                "model": "claude-opus-4-8",
+                "usage": {
+                    "input_tokens": 2832,
+                    "cache_creation_input_tokens": 23317,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 1160,
+                    "service_tier": "standard",
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": 23317,
+                        "ephemeral_5m_input_tokens": 0
+                    },
+                    "speed": "standard"
+                }
+            },
+            "timestamp": "2026-06-14T01:00:00Z",
+            "sessionId": "abc-123",
+            "slug": "a-slug",
+            "requestId": "req_011Cc2"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(record.model(), Some("claude-opus-4-8"));
+        assert_eq!(record.request_id(), Some("req_011Cc2"));
+
+        let usage = record.usage().unwrap();
+        assert_eq!(usage.input_tokens, Some(2832));
+        assert_eq!(usage.output_tokens, Some(1160));
+        assert_eq!(usage.cache_creation_input_tokens, Some(23317));
+        assert_eq!(usage.cache_read_input_tokens, Some(0));
+        assert_eq!(usage.service_tier.as_deref(), Some("standard"));
+        assert_eq!(usage.speed.as_deref(), Some("standard"));
+        let cc = usage.cache_creation.as_ref().unwrap();
+        assert_eq!(cc.ephemeral_5m_input_tokens, Some(0));
+        assert_eq!(cc.ephemeral_1h_input_tokens, Some(23317));
+
+        let uses = record.tool_uses();
+        assert_eq!(uses.len(), 1);
+        let (id, name, input) = uses[0];
+        assert_eq!(id, Some("toolu_01EF"));
+        assert_eq!(name, Some("Read"));
+        assert_eq!(input.unwrap()["file_path"], "/tmp/x");
+    }
+
+    #[test]
+    fn parse_user_tool_result_is_error() {
+        // Real-shape user line: tool_result with tool_use_id and is_error.
+        let json = r#"{
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_01EF",
+                 "content": "command failed", "is_error": true}
+            ]},
+            "timestamp": "2026-06-14T01:00:01Z",
+            "sessionId": "abc-123"
+        }"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        let results = record.tool_results();
+        assert_eq!(results.len(), 1);
+        let (tool_use_id, is_error) = results[0];
+        assert_eq!(tool_use_id, Some("toolu_01EF"));
+        assert_eq!(is_error, Some(true));
+        // text extraction still works alongside the new fields.
+        assert_eq!(record.extract_text().unwrap(), "command failed");
     }
 }

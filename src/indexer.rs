@@ -97,6 +97,14 @@ fn delete_session_tx(tx: &rusqlite::Transaction, session_id: &str) -> Result<()>
         rusqlite::params![session_id],
     )?;
     tx.execute(
+        "DELETE FROM tool_calls WHERE session_id = ?1",
+        rusqlite::params![session_id],
+    )?;
+    // NOTE: message_usage is deliberately NOT deleted here. It is deduplicated on
+    // request_id (INSERT ... ON CONFLICT keeping the MAX per column), so it is safe
+    // to re-run, and skipping the delete keeps usage from sibling files that share
+    // this session_id (e.g. subagent transcripts) from collapsing to the last file.
+    tx.execute(
         "DELETE FROM conversations WHERE session_id = ?1",
         rusqlite::params![session_id],
     )?;
@@ -207,6 +215,12 @@ fn index_file_tx(
     let mut first_ts: Option<String> = None;
     let mut last_ts: Option<String> = None;
 
+    // Map a tool_use_id to the row id of its tool_calls record, so a later
+    // tool_result (usually on the next user message) can set is_error.
+    let mut tool_row_by_use_id: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // Map a tool_use_id to the observed is_error flag from a tool_result.
+    let mut error_by_use_id: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -243,6 +257,51 @@ fn index_file_tx(
             custom_title = Some(t.clone());
         }
 
+        // Capture tool_use blocks as tool_calls rows.
+        for (id, name, input) in record.tool_uses() {
+            let Some(name) = name else { continue };
+            let (input_str, truncated) = match input {
+                Some(v) => {
+                    let raw = v.to_string();
+                    let (slice, trunc) = truncate_on_char_boundary(&raw, TOOL_INPUT_CAP);
+                    (Some(slice.to_string()), trunc)
+                }
+                None => (None, false),
+            };
+            let row_id = insert_tool_call_tx(
+                tx,
+                session_id,
+                record.timestamp(),
+                id,
+                name,
+                input_str.as_deref(),
+                truncated,
+            )?;
+            if let Some(id) = id {
+                tool_row_by_use_id.insert(id.to_string(), row_id);
+            }
+        }
+
+        // Capture tool_result is_error flags (resolved against tool_calls below).
+        for (tool_use_id, is_error) in record.tool_results() {
+            if let (Some(id), Some(err)) = (tool_use_id, is_error) {
+                error_by_use_id.insert(id.to_string(), err);
+            }
+        }
+
+        // Capture token usage independently of text. Text-less tool-only
+        // assistant turns carry usage but produce no `messages` row.
+        if let Some(usage) = record.usage() {
+            insert_message_usage_tx(
+                tx,
+                session_id,
+                record.timestamp(),
+                record.request_id(),
+                record.model(),
+                usage,
+            )?;
+        }
+
         // Extract and store text content
         if let (Some(role), Some(text)) = (record.role(), record.extract_text())
             && !text.is_empty()
@@ -255,6 +314,16 @@ fn index_file_tx(
                 _ => "other",
             };
             insert_message_tx(tx, session_id, record.timestamp(), role, &text, record_type)?;
+        }
+    }
+
+    // Resolve is_error flags now that the whole file has been read.
+    for (use_id, err) in &error_by_use_id {
+        if let Some(row_id) = tool_row_by_use_id.get(use_id) {
+            tx.execute(
+                "UPDATE tool_calls SET is_error = ?1 WHERE id = ?2",
+                rusqlite::params![*err as i64, row_id],
+            )?;
         }
     }
 
@@ -315,6 +384,78 @@ fn insert_message_tx(
     Ok(())
 }
 
+/// Insert a per-assistant-message usage record (transaction-local version).
+fn insert_message_usage_tx(
+    tx: &rusqlite::Transaction,
+    session_id: &str,
+    timestamp: Option<&str>,
+    request_id: Option<&str>,
+    model: Option<&str>,
+    usage: &crate::models::Usage,
+) -> Result<()> {
+    let cc = usage.cache_creation.as_ref();
+    tx.execute(
+        crate::db::MESSAGE_USAGE_UPSERT,
+        rusqlite::params![
+            session_id,
+            timestamp,
+            request_id,
+            model,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
+            cc.and_then(|c| c.ephemeral_5m_input_tokens),
+            cc.and_then(|c| c.ephemeral_1h_input_tokens),
+            usage.service_tier.as_deref(),
+            usage.speed.as_deref(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert a tool-call record (transaction-local version).
+fn insert_tool_call_tx(
+    tx: &rusqlite::Transaction,
+    session_id: &str,
+    timestamp: Option<&str>,
+    tool_use_id: Option<&str>,
+    tool_name: &str,
+    input: Option<&str>,
+    input_truncated: bool,
+) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO tool_calls (session_id, timestamp, tool_use_id, tool_name,
+            input, input_truncated, is_error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+        rusqlite::params![
+            session_id,
+            timestamp,
+            tool_use_id,
+            tool_name,
+            input,
+            input_truncated as i64,
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// Truncate a string to at most `cap` bytes on a UTF-8 char boundary.
+/// Returns the (possibly borrowed) slice and whether truncation occurred.
+fn truncate_on_char_boundary(s: &str, cap: usize) -> (&str, bool) {
+    if s.len() <= cap {
+        return (s, false);
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], true)
+}
+
+/// Maximum stored byte length of a tool call's serialized input.
+const TOOL_INPUT_CAP: usize = 1024;
+
 /// Index a single JSONL file (uses Database methods directly, for testing).
 #[cfg(test)]
 fn index_file(db: &Database, path: &Path, session_id: &str, project: &str) -> Result<()> {
@@ -336,6 +477,12 @@ fn index_file(db: &Database, path: &Path, session_id: &str, project: &str) -> Re
     let mut custom_title: Option<String> = None;
     let mut first_ts: Option<String> = None;
     let mut last_ts: Option<String> = None;
+
+    // Map a tool_use_id to the row id of its tool_calls record, so a later
+    // tool_result (usually on the next user message) can set is_error.
+    let mut tool_row_by_use_id: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // Map a tool_use_id to the observed is_error flag from a tool_result.
+    let mut error_by_use_id: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
 
     for line in reader.lines() {
         let line = line?;
@@ -373,6 +520,50 @@ fn index_file(db: &Database, path: &Path, session_id: &str, project: &str) -> Re
             custom_title = Some(t.clone());
         }
 
+        // Capture tool_use blocks as tool_calls rows.
+        for (id, name, input) in record.tool_uses() {
+            let Some(name) = name else { continue };
+            let (input_str, truncated) = match input {
+                Some(v) => {
+                    let raw = v.to_string();
+                    let (slice, trunc) = truncate_on_char_boundary(&raw, TOOL_INPUT_CAP);
+                    (Some(slice.to_string()), trunc)
+                }
+                None => (None, false),
+            };
+            let row_id = db.insert_tool_call(
+                session_id,
+                record.timestamp(),
+                id,
+                name,
+                input_str.as_deref(),
+                truncated,
+                None,
+            )?;
+            if let Some(id) = id {
+                tool_row_by_use_id.insert(id.to_string(), row_id);
+            }
+        }
+
+        // Capture tool_result is_error flags (resolved against tool_calls below).
+        for (tool_use_id, is_error) in record.tool_results() {
+            if let (Some(id), Some(err)) = (tool_use_id, is_error) {
+                error_by_use_id.insert(id.to_string(), err);
+            }
+        }
+
+        // Capture token usage independently of text. Text-less tool-only
+        // assistant turns carry usage but produce no `messages` row.
+        if let Some(usage) = record.usage() {
+            db.insert_message_usage(
+                session_id,
+                record.timestamp(),
+                record.request_id(),
+                record.model(),
+                usage,
+            )?;
+        }
+
         // Extract and store text content
         if let (Some(role), Some(text)) = (record.role(), record.extract_text())
             && !text.is_empty()
@@ -385,6 +576,16 @@ fn index_file(db: &Database, path: &Path, session_id: &str, project: &str) -> Re
                 _ => "other",
             };
             db.insert_message(session_id, record.timestamp(), role, &text, record_type)?;
+        }
+    }
+
+    // Resolve is_error flags now that the whole file has been read.
+    for (use_id, err) in &error_by_use_id {
+        if let Some(row_id) = tool_row_by_use_id.get(use_id) {
+            db.conn.execute(
+                "UPDATE tool_calls SET is_error = ?1 WHERE id = ?2",
+                rusqlite::params![*err as i64, row_id],
+            )?;
         }
     }
 
@@ -622,5 +823,101 @@ not valid json at all
     fn test_decode_project_name_empty() {
         // Edge case: empty string
         assert_eq!(decode_project_name(""), "unknown");
+    }
+
+    #[test]
+    fn test_truncate_on_char_boundary() {
+        let (s, t) = truncate_on_char_boundary("hello", 10);
+        assert_eq!(s, "hello");
+        assert!(!t);
+
+        // Multi-byte char straddling the cap is not split.
+        let input = "aaa\u{e9}"; // 'é' is 2 bytes; total 5 bytes
+        let (s, t) = truncate_on_char_boundary(input, 4);
+        assert_eq!(s, "aaa");
+        assert!(t);
+    }
+
+    #[test]
+    fn test_index_file_captures_usage_and_tool_calls() {
+        let db = Database::open_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let jsonl_path = dir.path().join("test.jsonl");
+
+        // Line 1: text + tool_use assistant turn (req_1). Line 2: tool_result.
+        // Lines 3-4: ONE billed response (req_2) split across two blocks — a
+        // text-LESS tool-only turn that produces no `messages` row, with
+        // output_tokens growing to its final value on the last block.
+        let data = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reading"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/x"}}],"model":"claude-opus-4-8","usage":{"input_tokens":2832,"output_tokens":1160,"cache_creation_input_tokens":23317,"cache_read_input_tokens":0,"service_tier":"standard","speed":"standard","cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":23317}}},"timestamp":"2026-06-14T01:00:00Z","sessionId":"sess-u","slug":"s","requestId":"req_1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"failed","is_error":true}]},"timestamp":"2026-06-14T01:00:01Z","sessionId":"sess-u"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}],"model":"claude-opus-4-8","usage":{"input_tokens":500,"output_tokens":40}},"timestamp":"2026-06-14T01:00:02Z","sessionId":"sess-u","requestId":"req_2"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"ls"}}],"model":"claude-opus-4-8","usage":{"input_tokens":500,"output_tokens":200}},"timestamp":"2026-06-14T01:00:03Z","sessionId":"sess-u","requestId":"req_2"}
+"#;
+        std::fs::write(&jsonl_path, data).unwrap();
+
+        index_file(&db, &jsonl_path, "sess-u", "test-project").unwrap();
+
+        // Usage captured for the text-bearing assistant turn.
+        let input_tokens: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT input_tokens FROM message_usage WHERE request_id = 'req_1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(input_tokens, Some(2832));
+
+        // The two req_2 lines collapse to ONE row deduped on request_id; the
+        // text-less turn's usage is captured even with no `messages` row.
+        let usage_rows: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM message_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(usage_rows, 2);
+        // Only req_1 carried text, so only one assistant `messages` row exists.
+        let assistant_msgs: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE role = 'assistant'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(assistant_msgs, 1);
+        // req_2 keeps the MAX output (200, not the partial 40, and not summed).
+        let req2_out: i64 = db
+            .conn
+            .query_row(
+                "SELECT output_tokens FROM message_usage WHERE request_id = 'req_2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(req2_out, 200);
+        // Totals reflect deduped usage: 2832 + 500 input, 1160 + 200 output.
+        let (total_input, total_output): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(output_tokens) FROM message_usage",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(total_input, 3332);
+        assert_eq!(total_output, 1360);
+
+        // tool_calls row with name, resolved is_error, and untruncated input.
+        let (name, is_error, truncated): (String, Option<i64>, i64) = db
+            .conn
+            .query_row(
+                "SELECT tool_name, is_error, input_truncated FROM tool_calls WHERE tool_use_id = 'toolu_1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Read");
+        assert_eq!(is_error, Some(1));
+        assert_eq!(truncated, 0);
     }
 }

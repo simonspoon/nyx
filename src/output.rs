@@ -5,6 +5,7 @@ use serde_json::json;
 use crate::db::{Database, DbStats};
 use crate::friction::{FrictionMatch, FrictionSummary};
 use crate::search::{ConversationEntry, SearchResult, TranscriptMessage};
+use crate::usage::GroupBy;
 
 /// Format and print status output.
 pub fn print_status(db: &Database, stats: &DbStats, source_size: u64, json: bool) {
@@ -434,6 +435,130 @@ fn print_friction_summary_json(summary: &FrictionSummary) {
         "by_type": by_type,
         "by_severity": by_severity,
         "top_phrases": top_phrases,
+    });
+    println!("{}", serde_json::to_string(&output).unwrap());
+}
+
+/// A display usage row: tokens summed per group, with its priced cost. `cost`
+/// is `None` only when no sub-row in the group could be priced.
+pub struct DisplayUsageRow {
+    pub group: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_5m: i64,
+    pub cache_creation_1h: i64,
+    pub cost: Option<f64>,
+}
+
+/// Format and print usage aggregation.
+pub fn print_usage(by: GroupBy, rows: &[DisplayUsageRow], unpriced: &[String], json: bool) {
+    if json {
+        print_usage_json(by, rows, unpriced);
+    } else {
+        print_usage_human(by, rows, unpriced);
+    }
+}
+
+fn print_usage_human(by: GroupBy, rows: &[DisplayUsageRow], unpriced: &[String]) {
+    if rows.is_empty() {
+        println!("No usage data found.");
+        return;
+    }
+
+    println!(
+        "{:<28} {:>12} {:>12} {:>14} {:>12} {:>12}",
+        by.label().to_uppercase(),
+        "INPUT",
+        "OUTPUT",
+        "CACHE_WRITE",
+        "CACHE_READ",
+        "COST"
+    );
+    println!("{}", "-".repeat(94));
+
+    let mut total_input = 0i64;
+    let mut total_output = 0i64;
+    let mut total_cache_write = 0i64;
+    let mut total_cache_read = 0i64;
+    let mut total_cost = 0.0f64;
+    let mut any_cost = false;
+
+    for r in rows {
+        let cost_str = match r.cost {
+            Some(c) => {
+                total_cost += c;
+                any_cost = true;
+                format!("${:.2}", c)
+            }
+            None => "?".to_string(),
+        };
+        total_input += r.input_tokens;
+        total_output += r.output_tokens;
+        total_cache_write += r.cache_creation_tokens;
+        total_cache_read += r.cache_read_tokens;
+
+        println!(
+            "{:<28} {:>12} {:>12} {:>14} {:>12} {:>12}",
+            truncate_group(&r.group),
+            r.input_tokens,
+            r.output_tokens,
+            r.cache_creation_tokens,
+            r.cache_read_tokens,
+            cost_str
+        );
+    }
+
+    println!("{}", "-".repeat(94));
+    let total_cost_str = if any_cost {
+        format!("${:.2}", total_cost)
+    } else {
+        "?".to_string()
+    };
+    println!(
+        "{:<28} {:>12} {:>12} {:>14} {:>12} {:>12}",
+        "TOTAL", total_input, total_output, total_cache_write, total_cache_read, total_cost_str
+    );
+
+    if !unpriced.is_empty() {
+        println!(
+            "\nNote: cost unknown for unpriced model(s): {}",
+            unpriced.join(", ")
+        );
+        println!("Add rates to ~/.nyx/pricing.toml to price them.");
+    }
+}
+
+fn truncate_group(s: &str) -> String {
+    if s.chars().count() <= 27 {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(26).collect();
+        format!("{}…", truncated)
+    }
+}
+
+fn print_usage_json(by: GroupBy, rows: &[DisplayUsageRow], unpriced: &[String]) {
+    let groups: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "group": r.group,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "cache_creation_tokens": r.cache_creation_tokens,
+                "cache_read_tokens": r.cache_read_tokens,
+                "cache_creation_5m": r.cache_creation_5m,
+                "cache_creation_1h": r.cache_creation_1h,
+                "cost_usd": r.cost,
+            })
+        })
+        .collect();
+    let output = json!({
+        "by": by.label(),
+        "groups": groups,
+        "unpriced_models": unpriced,
     });
     println!("{}", serde_json::to_string(&output).unwrap());
 }

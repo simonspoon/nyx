@@ -59,7 +59,7 @@ pub fn parse_duration(s: &str) -> Result<u64> {
 }
 
 /// Compute an ISO 8601 timestamp for "now minus duration_secs".
-fn cutoff_timestamp(duration_secs: u64) -> String {
+pub fn cutoff_timestamp(duration_secs: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -341,7 +341,8 @@ mod tests {
             None,
         )
         .unwrap();
-        db.insert_message("s1", Some("2026-03-20T01:00:00Z"), "user", "hello", "user")
+        db.insert_message("s1", Some("2026-03-20T01:00:00Z"), "user", "hello", "user",
+        )
             .unwrap();
         db.insert_message(
             "s1",
